@@ -1,19 +1,70 @@
-package com.lyf.mediarecord.recorder.utils
+package com.lyf.mediarecord.recorder
 
 import android.media.*
 import android.util.Log
 import com.lyf.mediarecord.recorder.data.EncoderParams
-import kotlinx.coroutines.*
+import com.lyf.mediarecord.recorder.utils.CameraXEncoder
+import kotlinx.coroutines.delay
 import java.lang.ref.WeakReference
 
-class CameraXEncoder {
+class Encoder : Thread() {
     private var mParamsRef: WeakReference<EncoderParams>? = null
     private var mColorFormat = 0
     private var mMuxer: MediaMuxer? = null
     private var mMediaCodec: MediaCodec? = null
     private var isRecording = false
     private var videoTrack = 0
-    private var jod = MainScope()
+
+    override fun run() {
+        if (!isRecording) {
+            startRecoding()
+        }
+        while (mMediaCodec != null) {
+            while (true) {
+                //获得输出缓冲区 (编码后的数据从输出缓冲区获得)
+                val bufferInfo = MediaCodec.BufferInfo()
+                val encoderStatus = mMediaCodec!!.dequeueOutputBuffer(bufferInfo, 10000)
+                //稍后重试
+                if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    break
+                } else if (encoderStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    //输出格式发生改变  第一次总会调用，所以在这里开启混合器
+                    val newFormat = mMediaCodec!!.outputFormat
+                    videoTrack = mMuxer!!.addTrack(newFormat)
+                    mMuxer!!.start()
+                } else {
+                    //正常则 encoderStatus 获得缓冲区下标
+                    val encodedData = mMediaCodec!!.getOutputBuffer(encoderStatus)
+                    //如果当前的buffer是配置信息，不管它 不用写出去
+                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                        bufferInfo.size = 0
+                    }
+                    if (bufferInfo.size != 0) {
+                        //设置从哪里开始读数据(读出来就是编码后的数据)
+                        encodedData!!.position(bufferInfo.offset)
+                        //设置能读数据的总长度
+                        encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                        //写出为mp4
+                        mMuxer!!.writeSampleData(videoTrack, encodedData, bufferInfo)
+                    }
+                    // 释放这个缓冲区，后续可以存放新的编码后的数据啦
+                    mMediaCodec!!.releaseOutputBuffer(encoderStatus, false)
+                }
+            }
+        }
+        stopRecording()
+    }
+
+    fun queueEncode(data: ByteArray) {
+        if (!isRecording && mMediaCodec == null) return
+        val index = mMediaCodec!!.dequeueInputBuffer(0)
+        if (index >= 0) {
+            val inputBuffer = mMediaCodec!!.getInputBuffer(index)
+            inputBuffer?.clear()
+            inputBuffer?.put(data, 0, data.size)
+            mMediaCodec?.queueInputBuffer(index, 0, data.size, System.nanoTime() / 1000, 0)
+        }
+    }
 
     companion object {
         const val TAG = "VideoCodec"
@@ -23,7 +74,7 @@ class CameraXEncoder {
         mParamsRef = WeakReference<EncoderParams>(params)
     }
 
-    fun startRecoding() {
+    private fun startRecoding() {
         if (mParamsRef?.get() == null) {
             Log.e(TAG, "This mParamsRef is null")
             return
@@ -55,84 +106,21 @@ class CameraXEncoder {
         isRecording = true
     }
 
-    fun queueEncode(buffer: ByteArray) {
-        if (!isRecording) return
-        jod.launch(Dispatchers.Default) {
-            try {
-                // 定义缓冲区大小，用于存储拆分后的数据块
-                val chunkSize = 1024 * 1024
-                val data = ByteArray(chunkSize)
-
-                var offset = 0
-                while (offset < buffer.size) {
-                    val index = mMediaCodec!!.dequeueInputBuffer(-1)
-                    if (index >= 0) {
-                        val inputBuffer = mMediaCodec!!.getInputBuffer(index)
-                        val sampleSize = minOf(buffer.size - offset, inputBuffer!!.remaining())
-                        inputBuffer.clear()
-                        inputBuffer.put(buffer, offset, sampleSize)
-                        mMediaCodec!!.queueInputBuffer(
-                            index, 0, sampleSize,
-                            System.nanoTime() / 1000, 0
-                        )
-                        offset += sampleSize
-                    } else {
-                        // 缓冲区已满，等待一段时间
-                        delay(10)
-                    }
-                }
-
-                while (true) {
-                    //获得输出缓冲区 (编码后的数据从输出缓冲区获得)
-                    val bufferInfo = MediaCodec.BufferInfo()
-                    val encoderStatus = mMediaCodec!!.dequeueOutputBuffer(bufferInfo, 10000)
-                    //稍后重试
-                    if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        break
-                    } else if (encoderStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        //输出格式发生改变  第一次总会调用，所以在这里开启混合器
-                        val newFormat = mMediaCodec!!.outputFormat
-                        videoTrack = mMuxer!!.addTrack(newFormat)
-                        mMuxer!!.start()
-                    } else {
-                        //正常则 encoderStatus 获得缓冲区下标
-                        val encodedData = mMediaCodec!!.getOutputBuffer(encoderStatus)
-                        //如果当前的buffer是配置信息，不管它 不用写出去
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                            bufferInfo.size = 0
-                        }
-                        if (bufferInfo.size != 0) {
-                            //设置从哪里开始读数据(读出来就是编码后的数据)
-                            encodedData!!.position(bufferInfo.offset)
-                            //设置能读数据的总长度
-                            encodedData.limit(bufferInfo.offset + bufferInfo.size)
-                            //写出为mp4
-                            mMuxer!!.writeSampleData(videoTrack, encodedData, bufferInfo)
-                        }
-                        // 释放这个缓冲区，后续可以存放新的编码后的数据啦
-                        mMediaCodec!!.releaseOutputBuffer(encoderStatus, false)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "cause is ------->$e")
-                e.printStackTrace()
-            }
+    private fun stopRecording(){
+        isRecording=true
+        mMediaCodec?.apply {
+            stop()
+            release()
         }
+        mMediaCodec=null
     }
 
-    fun stopRecord() {
-        isRecording = false
-        mMediaCodec?.run {
+    fun stopMuxer(){
+        mMuxer?.apply {
             stop()
             release()
-            null
         }
-        mMuxer?.run {
-            stop()
-            release()
-            null
-        }
-        jod.cancel()
+        mMuxer=null
     }
 
     /**
@@ -151,7 +139,7 @@ class CameraXEncoder {
             val types = codecInfo.supportedTypes
             for (j in types.indices) {
                 if (types[j].equals(mimeType, ignoreCase = true)) {
-                    Log.d(TAG, "使用的编码器----->$codecInfo")
+                    Log.d(CameraXEncoder.TAG, "使用的编码器----->$codecInfo")
                     return codecInfo
                 }
             }
@@ -167,7 +155,7 @@ class CameraXEncoder {
         for (i in capabilities.colorFormats.indices) {
             val colorFormat = capabilities.colorFormats[i]
             if (isCodecRecognizedFormat(colorFormat)) {
-                Log.d(TAG, "支持的颜色格式$colorFormat")
+                Log.d(CameraXEncoder.TAG, "支持的颜色格式$colorFormat")
                 return colorFormat
             }
         }

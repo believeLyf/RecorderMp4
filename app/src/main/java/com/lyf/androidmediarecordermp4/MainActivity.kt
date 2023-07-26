@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Button
-import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -22,23 +21,26 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import com.lyf.mediarecord.recorder.RecordMp4
-import com.lyf.mediarecord.recorder.data.EncoderParams
 
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : FragmentActivity() {
     private lateinit var imageAnalyzer: ImageAnalysis
     private var isRecording: Boolean = false
     private lateinit var mp4: RecordMp4
     private lateinit var previewView:PreviewView
+    private lateinit var preview:Preview
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         checkPermission()
+        startCamera(this)
         previewView = findViewById<PreviewView>(R.id.previewView)
         // 配置相机用例
+        preview = Preview.Builder().build()
+        preview.setSurfaceProvider(previewView.surfaceProvider)
         val recordMp4 = RecordMp4.getInstance(this)
-        recordMp4.startCamera(previewView, this)
+        recordMp4.startCamera(previewView,this)
         imageAnalyzer = ImageAnalysis.Builder()
             .setTargetAspectRatio(AspectRatio.RATIO_16_9)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -46,7 +48,6 @@ class MainActivity : AppCompatActivity() {
         recordMp4.setImageAnalysis(imageAnalyzer, this)
 
         mp4 = RecordMp4.getInstance(this)
-        mp4.setEncoderParams(EncoderParams())
         val button = findViewById<Button>(R.id.record)
         button.setOnClickListener {
             if (isRecording) {
@@ -64,9 +65,24 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         mp4.stopCamera()
+        cameraProvider.unbindAll()
     }
 
-    private fun checkPermission() {
+    private lateinit var cameraProvider: ProcessCameraProvider
+
+    private fun startCamera(context:LifecycleOwner) {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        cameraProviderFuture.addListener(Runnable {
+            // 获取相机提供者的实例
+            cameraProvider = cameraProviderFuture.get()
+
+            // 将用例绑定到生命周期
+            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            cameraProvider.bindToLifecycle(context, cameraSelector, preview)
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    fun checkPermission() {
         var targetSdkVersion = 0
         val PermissionString = arrayOf<String>(
             Manifest.permission.READ_EXTERNAL_STORAGE,
