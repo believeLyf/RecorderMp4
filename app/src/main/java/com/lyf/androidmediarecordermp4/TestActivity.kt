@@ -1,79 +1,99 @@
 package com.lyf.androidmediarecordermp4
 
 import android.Manifest
-import android.app.Activity
-import android.content.Context
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.graphics.SurfaceTexture
+import android.hardware.Camera
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.TextureView
+import android.view.TextureView.SurfaceTextureListener
+import android.view.View
 import android.widget.Button
-import androidx.camera.core.AspectRatio
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.LifecycleRegistry
-import com.lyf.mediarecord.recorder.RecordMp4
+import com.lyf.mediarecord.recorder.Encoder
 import com.lyf.mediarecord.recorder.data.EncoderParams
+import com.lyf.mediarecord.recorder.utils.CameraHelper
 
 
-class MainActivity : FragmentActivity() {
-    private lateinit var imageAnalyzer: ImageAnalysis
-    private var isRecording: Boolean = false
-    private lateinit var mp4: RecordMp4
-    private lateinit var previewView: PreviewView
-    private lateinit var preview: Preview
-
+class TestActivity : AppCompatActivity(), View.OnClickListener,
+    Camera.PreviewCallback {
+    private var mCameraHelper: CameraHelper? = null
+    private var videoCodec: Encoder? = null
+    private var isRecording:Boolean=false
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        setContentView(R.layout.activity_test)
         checkPermission()
-        previewView = findViewById<PreviewView>(R.id.previewView)
-        // 配置相机用例
-        preview = Preview.Builder().build()
-        preview.setSurfaceProvider(previewView.surfaceProvider)
-        val recordMp4 = RecordMp4.getInstance(this)
-        recordMp4.startCamera(previewView, this)
-        imageAnalyzer = ImageAnalysis.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_16_9)
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-        recordMp4.setImageAnalysis(imageAnalyzer, this)
-
-        mp4 = RecordMp4.getInstance(this)
-        val button = findViewById<Button>(R.id.record)
-        button.setOnClickListener {
-            if (isRecording) {
-                mp4.stopRecord()
-                isRecording = false
-                button.text = "开始录制"
-            } else {
-                mp4.setEncoderParams(EncoderParams("/storage/emulated/0/DCIM/Camera/aaa.mp4"))
-                mp4.startRecord()
-                isRecording = true
-                button.text = "停止录制"
+        mCameraHelper = CameraHelper(640, 480)
+        mCameraHelper!!.setPreviewCallback(this)
+        videoCodec = Encoder()
+        videoCodec!!.setEncoderParam(EncoderParams("/storage/emulated/0/DCIM/Camera/aaa.mp4"))
+        val textureView = findViewById<TextureView>(R.id.textureView)
+        textureView.surfaceTextureListener = object : SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(
+                surface: SurfaceTexture,
+                width: Int,
+                height: Int
+            ) {
+                mCameraHelper!!.startPreview(surface)
             }
+
+            override fun onSurfaceTextureSizeChanged(
+                surface: SurfaceTexture,
+                width: Int,
+                height: Int
+            ) {
+            }
+
+            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                mCameraHelper!!.stopPreview()
+                return true
+            }
+
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
         }
+        findViewById<View>(R.id.btn_record).setOnClickListener(this)
+        findViewById<View>(R.id.button).setOnClickListener(this)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        mp4.stopCamera()
+    }
+
+    override fun onPreviewFrame(data: ByteArray?, camera: Camera?) {
+        videoCodec!!.queueEncode(data!!)
+    }
+
+    @SuppressLint("SdCardPath")
+    override fun onClick(v: View) {
+        val button: Button = v as Button
+        if (v.getId() === R.id.btn_record) {
+            if(!isRecording){
+                videoCodec?.start()
+                isRecording=true
+            }else{
+                isRecording=false
+                videoCodec?.stopMuxer()
+                videoCodec?.exit()
+                val t1=videoCodec
+                t1?.interrupt()
+                t1?.join()
+            }
+        } else {
+            checkPermission()
+        }
     }
 
     fun checkPermission() {
         var targetSdkVersion = 0
         val PermissionString = arrayOf<String>(
             Manifest.permission.READ_EXTERNAL_STORAGE,
-            Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO
+            Manifest.permission.CAMERA
         )
         try {
             val info = this.packageManager.getPackageInfo(this.packageName, 0)
@@ -122,7 +142,7 @@ class MainActivity : FragmentActivity() {
     //申请权限结果返回处理
     override fun onRequestPermissionsResult(
         requestCode: Int,
-        permissions: Array<String?>,
+        permissions: Array<String>,
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)

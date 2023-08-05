@@ -3,26 +3,32 @@ package com.lyf.mediarecord.recorder
 import android.media.*
 import android.util.Log
 import com.lyf.mediarecord.recorder.data.EncoderParams
-import com.lyf.mediarecord.recorder.utils.CameraXEncoder
-import kotlinx.coroutines.delay
-import java.lang.ref.WeakReference
 
 class Encoder : Thread() {
-    private var mParamsRef: WeakReference<EncoderParams>? = null
+    companion object {
+        const val TAG = "VideoCodec"
+    }
+    private var mParamsRef: EncoderParams?=null
     private var mColorFormat = 0
     private var mMuxer: MediaMuxer? = null
     private var mMediaCodec: MediaCodec? = null
     private var isRecording = false
     private var videoTrack = 0
+    private var isExit = false
 
     override fun run() {
         if (!isRecording) {
+            try {
+                sleep(200)
+            } catch (e: InterruptedException) {
+                e.printStackTrace()
+            }
             startRecoding()
         }
-        while (mMediaCodec != null) {
+        while (mMediaCodec != null && !isExit) {
             while (true) {
-                //获得输出缓冲区 (编码后的数据从输出缓冲区获得)
                 val bufferInfo = MediaCodec.BufferInfo()
+                //获得输出缓冲区 (编码后的数据从输出缓冲区获得)
                 val encoderStatus = mMediaCodec!!.dequeueOutputBuffer(bufferInfo, 10000)
                 //稍后重试
                 if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
@@ -56,71 +62,75 @@ class Encoder : Thread() {
     }
 
     fun queueEncode(data: ByteArray) {
-        if (!isRecording && mMediaCodec == null) return
-        val index = mMediaCodec!!.dequeueInputBuffer(0)
-        if (index >= 0) {
-            val inputBuffer = mMediaCodec!!.getInputBuffer(index)
-            inputBuffer?.clear()
-            inputBuffer?.put(data, 0, data.size)
-            mMediaCodec?.queueInputBuffer(index, 0, data.size, System.nanoTime() / 1000, 0)
+        if (!isRecording) return
+        if(mMediaCodec != null){
+            val index = mMediaCodec!!.dequeueInputBuffer(0)
+            if (index >= 0) {
+                val inputBuffer = mMediaCodec!!.getInputBuffer(index)
+                inputBuffer?.clear()
+                inputBuffer?.put(data, 0, data.size)
+                mMediaCodec?.queueInputBuffer(index, 0, data.size, System.nanoTime() / 1000, 0)
+            }
         }
-    }
-
-    companion object {
-        const val TAG = "VideoCodec"
     }
 
     fun setEncoderParam(params: EncoderParams) {
-        mParamsRef = WeakReference<EncoderParams>(params)
+        mParamsRef = params
     }
 
     private fun startRecoding() {
-        if (mParamsRef?.get() == null) {
+        isExit = false
+        if (mParamsRef == null) {
             Log.e(TAG, "This mParamsRef is null")
             return
         }
-        val mParams = mParamsRef!!.get()
+        val mCodecInfo = selectSupportCodec(MediaFormat.MIMETYPE_VIDEO_AVC)
         try {
-            val mCodecInfo = selectSupportCodec(MediaFormat.MIMETYPE_VIDEO_AVC)
             mColorFormat = selectSupportColorFormat(mCodecInfo!!, MediaFormat.MIMETYPE_VIDEO_AVC)
             mMediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            mMuxer = MediaMuxer(mParams!!.videoPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            mMuxer = MediaMuxer(mParamsRef!!.videoPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         } catch (e: Exception) {
             Log.e(TAG, "[create MediaCodec、ColorFormat、Muxer fail]----->cause is $e")
             e.printStackTrace()
         }
         val format = MediaFormat.createVideoFormat(
             MediaFormat.MIMETYPE_VIDEO_AVC,
-            mParams!!.videoWidth, mParams.videoHeight
+            mParamsRef!!.videoWidth, mParamsRef!!.videoHeight
         )
         //色彩空间
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, mColorFormat)
         //码率
-        format.setInteger(MediaFormat.KEY_BIT_RATE, mParams.bitRate)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, mParamsRef!!.bitRate)
         //帧率 fps
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, mParams.frameRate)
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, mParamsRef!!.frameRate)
         //关键帧间隔
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        mMediaCodec!!.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        mMediaCodec!!.start()
-        isRecording = true
+        mMediaCodec?.let {
+            it.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            it.start()
+            isRecording = true
+        }
     }
 
-    private fun stopRecording(){
-        isRecording=true
+    private fun stopRecording() {
+        isRecording = true
         mMediaCodec?.apply {
             stop()
             release()
         }
-        mMediaCodec=null
+        mMediaCodec = null
     }
 
-    fun stopMuxer(){
+    fun stopMuxer() {
         mMuxer?.apply {
             stop()
             release()
         }
-        mMuxer=null
+        mMuxer = null
+    }
+
+    fun exit() {
+        isExit = true
     }
 
     /**
@@ -139,7 +149,6 @@ class Encoder : Thread() {
             val types = codecInfo.supportedTypes
             for (j in types.indices) {
                 if (types[j].equals(mimeType, ignoreCase = true)) {
-                    Log.d(CameraXEncoder.TAG, "使用的编码器----->$codecInfo")
                     return codecInfo
                 }
             }
@@ -155,7 +164,6 @@ class Encoder : Thread() {
         for (i in capabilities.colorFormats.indices) {
             val colorFormat = capabilities.colorFormats[i]
             if (isCodecRecognizedFormat(colorFormat)) {
-                Log.d(CameraXEncoder.TAG, "支持的颜色格式$colorFormat")
                 return colorFormat
             }
         }
