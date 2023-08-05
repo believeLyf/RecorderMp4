@@ -84,8 +84,8 @@ class Encoder : Thread() {
             Log.e(TAG, "This mParamsRef is null")
             return
         }
-        val mCodecInfo = selectSupportCodec(MediaFormat.MIMETYPE_VIDEO_AVC)
         try {
+            val mCodecInfo = selectSupportCodec(MediaFormat.MIMETYPE_VIDEO_AVC)
             mColorFormat = selectSupportColorFormat(mCodecInfo!!, MediaFormat.MIMETYPE_VIDEO_AVC)
             mMediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             mMuxer = MediaMuxer(mParamsRef!!.videoPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
